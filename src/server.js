@@ -1172,19 +1172,37 @@ const proxy = httpProxy.createProxyServer({
   timeout: 120_000,
 });
 
-proxy.on("error", (err, _req, res) => {
+proxy.on("error", (err, req, res) => {
   log.error("proxy", String(err));
-  if (res && typeof res.headersSent !== "undefined" && !res.headersSent) {
-    res.writeHead(503, { "Content-Type": "text/html" });
-    try {
-      const html = fs.readFileSync(
-        path.join(process.cwd(), "src", "public", "loading.html"),
-        "utf8",
-      );
-      res.end(html);
-    } catch {
-      res.end("Gateway unavailable. Retrying...");
-    }
+
+  if (!res || typeof res.headersSent === "undefined" || res.headersSent) return;
+
+  const isApiRequest =
+    req?.url?.startsWith("/v1/") ||
+    req?.headers?.accept?.includes("application/json") ||
+    req?.headers?.["content-type"]?.includes("application/json");
+
+  if (isApiRequest) {
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ok: false,
+        error: "proxy_error",
+        message: String(err?.message || err),
+      }),
+    );
+    return;
+  }
+
+  res.writeHead(503, { "Content-Type": "text/html" });
+  try {
+    const html = fs.readFileSync(
+      path.join(process.cwd(), "src", "public", "loading.html"),
+      "utf8",
+    );
+    res.end(html);
+  } catch {
+    res.end("Gateway unavailable. Retrying...");
   }
 });
 
