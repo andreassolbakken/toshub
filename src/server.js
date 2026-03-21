@@ -1215,6 +1215,21 @@ proxy.on("proxyReq", (proxyReq, req, res) => {
     proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
   }
   proxyReq.setHeader("Origin", PROXY_ORIGIN);
+
+  const contentType = req.headers["content-type"] || "";
+  const isJson =
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    contentType.includes("application/json") &&
+    req.body &&
+    typeof req.body === "object";
+
+  if (isJson) {
+    const bodyData = JSON.stringify(req.body);
+    proxyReq.setHeader("Content-Type", "application/json");
+    proxyReq.setHeader("Content-Length", Buffer.byteLength(bodyData));
+    proxyReq.write(bodyData);
+  }
 });
 
 proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
