@@ -178,33 +178,62 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function checkGatewayApiReady(opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 3000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${GATEWAY_TARGET}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+      signal: controller.signal,
+    });
+
+    const body = await res.text().catch(() => "");
+    const isStartupHtml =
+      body.includes("OpenClaw is starting up") ||
+      body.includes("OpenClaw — Starting Up");
+
+    if (isStartupHtml) {
+      return { ready: false, status: res.status, body };
+    }
+
+    if (res.status === 404) {
+      return { ready: false, status: res.status, body };
+    }
+
+    if (res.status >= 500) {
+      return { ready: false, status: res.status, body };
+    }
+
+    return { ready: true, status: res.status, body };
+  } catch (err) {
+    const msg = err.code || err.cause?.code || err.message || "unknown";
+    return { ready: false, error: msg };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function waitForGatewayReady(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const start = Date.now();
-  const endpoints = ["/openclaw", "/openclaw", "/", "/health"];
 
   while (Date.now() - start < timeoutMs) {
-    for (const endpoint of endpoints) {
-      try {
-        const res = await fetch(`${GATEWAY_TARGET}${endpoint}`, {
-          method: "GET",
-        });
-        if (res) {
-          log.info("gateway", `ready at ${endpoint}`);
-          return true;
-        }
-      } catch (err) {
-        if (err.code !== "ECONNREFUSED" && err.cause?.code !== "ECONNREFUSED") {
-          const msg = err.code || err.message;
-          if (msg !== "fetch failed" && msg !== "UND_ERR_CONNECT_TIMEOUT") {
-            log.warn("gateway", `health check error: ${msg}`);
-          }
-        }
-      }
+    const probe = await checkGatewayApiReady({ timeoutMs: 3000 });
+    if (probe.ready) {
+      log.info("gateway", `API ready at /v1/responses (status=${probe.status})`);
+      return true;
     }
-    await sleep(250);
+    await sleep(1000);
   }
-  log.error("gateway", `failed to become ready after ${timeoutMs / 1000} seconds`);
+
+  log.error("gateway", `failed to become API-ready after ${timeoutMs / 1000} seconds`);
   return false;
 }
 
@@ -383,6 +412,28 @@ app.get("/healthz", async (_req, res) => {
     gateway = isGatewayReady() ? "ready" : "starting";
   }
   res.json({ ok: true, gateway });
+});
+
+app.get("/_ready", async (_req, res) => {
+  if (!isConfigured()) {
+    return res.status(503).json({ ok: false, reason: "not configured" });
+  }
+
+  const probe = await checkGatewayApiReady({ timeoutMs: 5000 });
+  if (!probe.ready) {
+    return res.status(503).json({
+      ok: false,
+      ready: false,
+      status: probe.status ?? null,
+      error: probe.error ?? null,
+    });
+  }
+
+  return res.json({
+    ok: true,
+    ready: true,
+    status: probe.status,
+  });
 });
 
 app.get("/setup/healthz", async (_req, res) => {
